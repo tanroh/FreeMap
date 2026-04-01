@@ -29,12 +29,10 @@ st.caption("Free public imagery — no API key required")
 # We do that by incrementing a counter whenever a layer-affecting control changes.
 if "map_key" not in st.session_state:
     st.session_state.map_key = 0
-if "prev_imagery" not in st.session_state:
-    st.session_state.prev_imagery = None
-if "prev_basemap" not in st.session_state:
-    st.session_state.prev_basemap = None
-if "prev_overlay" not in st.session_state:
-    st.session_state.prev_overlay = None
+
+def bump_map_key():
+    """Called via on_change on any layer-affecting widget."""
+    st.session_state.map_key += 1
 
 # ── Static date info (fallback for non-ESRI sources) ─────────────────────────
 STATIC_METADATA = {
@@ -130,6 +128,7 @@ with st.sidebar:
         ],
         index=0,
         label_visibility="collapsed",
+        on_change=bump_map_key,
     )
 
     # Aerial source — shown for modes 1 and 3
@@ -144,6 +143,7 @@ with st.sidebar:
             ],
             index=0,
             label_visibility="collapsed",
+            on_change=bump_map_key,
         )
     else:
         imagery_choice = None
@@ -159,12 +159,14 @@ with st.sidebar:
             ],
             index=0,
             label_visibility="collapsed",
+            on_change=bump_map_key,
         )
         # Overlay opacity only relevant in mode 3
         if view_mode == "Aerial + street overlay":
             overlay_opacity = st.slider(
                 "Street overlay opacity", min_value=0.1, max_value=0.9,
                 value=0.4, step=0.05,
+                on_change=bump_map_key,
             )
         else:
             overlay_opacity = 0.4
@@ -223,21 +225,6 @@ with st.sidebar:
         - [ESRI World Imagery](https://www.esri.com)
         """
     )
-
-# ── Bump map key if any layer-affecting setting changed ───────────────────────
-# This forces st_folium to mount a brand-new map rather than patch the old one,
-# which is what causes inconsistent layer switching behaviour.
-layer_sig = (view_mode, imagery_choice, basemap_choice, overlay_opacity)
-prev_sig = (
-    st.session_state.prev_imagery,
-    st.session_state.prev_basemap,
-    st.session_state.prev_overlay,
-)
-if layer_sig != prev_sig:
-    st.session_state.map_key += 1
-    st.session_state.prev_imagery = view_mode
-    st.session_state.prev_basemap = imagery_choice
-    st.session_state.prev_overlay = (basemap_choice, overlay_opacity)
 
 # ── Build map ─────────────────────────────────────────────────────────────────
 m = folium.Map(
