@@ -269,32 +269,8 @@ with map_col:
         use_container_width=True,
         height=650,
         key=f"map_{st.session_state.map_key}",
+        returned_objects=["last_clicked"],  # suppress pan/zoom reruns entirely
     )
-    # Passively track pan/zoom so a layer switch remounts at the current position.
-    # Guards against None, 0,0, out-of-range, and float jitter from spurious
-    # moveend events that st_folium fires during tile loading.
-    if map_data:
-        c = map_data.get("center")
-        if (
-            c
-            and isinstance(c, dict)
-            and c.get("lat") is not None
-            and c.get("lng") is not None
-            and not (c["lat"] == 0 and c["lng"] == 0)
-            and abs(c["lat"]) <= 90
-            and abs(c["lng"]) <= 180
-        ):
-            new_center = [c["lat"], c["lng"]]
-            # Only write if moved more than ~10m to avoid noise overwrites
-            if (
-                abs(new_center[0] - st.session_state.map_center[0]) > 0.0001
-                or abs(new_center[1] - st.session_state.map_center[1]) > 0.0001
-            ):
-                st.session_state.map_center = new_center
-
-        z = map_data.get("zoom")
-        if z is not None and isinstance(z, (int, float)) and 1 <= z <= 22:
-            st.session_state.map_zoom = int(z)
 
 with meta_col:
     st.subheader("📅 Imagery info")
