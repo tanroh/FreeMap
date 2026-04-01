@@ -116,31 +116,61 @@ def query_esri_metadata(lat: float, lon: float) -> dict | None:
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    st.subheader("🛰 Imagery layer")
-    imagery_choice = st.radio(
-        "Source",
+    # Three mutually exclusive view modes matching the use cases exactly:
+    #   1. Aerial only (choose which source)
+    #   2. Base map only (no aerial — street or topo)
+    #   3. Aerial + street overlay (aerial underneath, OSM semi-transparent on top)
+    st.subheader("🗺 View mode")
+    view_mode = st.radio(
+        "View mode",
         options=[
-            "ESRI World Imagery (National)",
-            "NSW SIX Maps (High-res NSW)",
-            "DEA Landsat (Rural/Regional)",
+            "Aerial only",
+            "Base map only",
+            "Aerial + street overlay",
         ],
         index=0,
         label_visibility="collapsed",
     )
 
-    st.subheader("🗺 Base map")
-    basemap_choice = st.radio(
-        "Base map",
-        options=[
-            "None (imagery only)",
-            "OpenStreetMap",
-            "ESRI Topo",
-        ],
-        index=0,
-        label_visibility="collapsed",
-    )
+    # Aerial source — shown for modes 1 and 3
+    if view_mode in ("Aerial only", "Aerial + street overlay"):
+        st.subheader("🛰 Aerial source")
+        imagery_choice = st.radio(
+            "Aerial source",
+            options=[
+                "ESRI World Imagery (National)",
+                "NSW SIX Maps (High-res NSW)",
+                "DEA Landsat (Rural/Regional)",
+            ],
+            index=0,
+            label_visibility="collapsed",
+        )
+    else:
+        imagery_choice = None
 
-    show_osm_overlay = st.toggle("Street label overlay (OSM)", value=False)
+    # Base map choice — shown for modes 2 and 3
+    if view_mode in ("Base map only", "Aerial + street overlay"):
+        st.subheader("🗺 Base map")
+        basemap_choice = st.radio(
+            "Base map",
+            options=[
+                "OpenStreetMap",
+                "ESRI Topo",
+            ],
+            index=0,
+            label_visibility="collapsed",
+        )
+        # Overlay opacity only relevant in mode 3
+        if view_mode == "Aerial + street overlay":
+            overlay_opacity = st.slider(
+                "Street overlay opacity", min_value=0.1, max_value=0.9,
+                value=0.4, step=0.05,
+            )
+        else:
+            overlay_opacity = 0.4
+    else:
+        basemap_choice  = None
+        overlay_opacity = 0.4
 
     st.divider()
 
@@ -197,7 +227,7 @@ with st.sidebar:
 # ── Bump map key if any layer-affecting setting changed ───────────────────────
 # This forces st_folium to mount a brand-new map rather than patch the old one,
 # which is what causes inconsistent layer switching behaviour.
-layer_sig = (imagery_choice, basemap_choice, show_osm_overlay)
+layer_sig = (view_mode, imagery_choice, basemap_choice, overlay_opacity)
 prev_sig = (
     st.session_state.prev_imagery,
     st.session_state.prev_basemap,
@@ -205,9 +235,9 @@ prev_sig = (
 )
 if layer_sig != prev_sig:
     st.session_state.map_key += 1
-    st.session_state.prev_imagery = imagery_choice
-    st.session_state.prev_basemap = basemap_choice
-    st.session_state.prev_overlay = show_osm_overlay
+    st.session_state.prev_imagery = view_mode
+    st.session_state.prev_basemap = imagery_choice
+    st.session_state.prev_overlay = (basemap_choice, overlay_opacity)
 
 # ── Build map ─────────────────────────────────────────────────────────────────
 m = folium.Map(
@@ -217,23 +247,19 @@ m = folium.Map(
     control_scale=True,
 )
 
-# Base map layer (rendered beneath imagery)
-if basemap_choice == "OpenStreetMap":
-    folium.TileLayer(
-        tiles="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-        attr="© OpenStreetMap contributors",
-        name="OpenStreetMap",
-        max_zoom=19,
-    ).add_to(m)
-elif basemap_choice == "ESRI Topo":
-    folium.TileLayer(
-        tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
-        attr="© Esri, HERE, Garmin, FAO, USGS, EPA, NPS",
-        name="ESRI Topo",
-        max_zoom=19,
-    ).add_to(m)
+BASEMAP_LAYERS = {
+    "OpenStreetMap": {
+        "tiles": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "attr":  "© OpenStreetMap contributors",
+        "name":  "OpenStreetMap",
+    },
+    "ESRI Topo": {
+        "tiles": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+        "attr":  "© Esri, HERE, Garmin, FAO, USGS, EPA, NPS",
+        "name":  "ESRI Topo",
+    },
+}
 
-# Imagery layer
 IMAGERY_LAYERS = {
     "ESRI World Imagery (National)": {
         "tiles":    "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -255,24 +281,36 @@ IMAGERY_LAYERS = {
     },
 }
 
-cfg = IMAGERY_LAYERS[imagery_choice]
-folium.TileLayer(
-    tiles=cfg["tiles"],
-    attr=cfg["attr"],
-    name=cfg["name"],
-    max_zoom=cfg["max_zoom"],
-).add_to(m)
-
-# Optional OSM label overlay
-if show_osm_overlay:
+# Use case 1: Aerial only — just the selected imagery, nothing else
+if view_mode == "Aerial only":
+    cfg = IMAGERY_LAYERS[imagery_choice]
     folium.TileLayer(
-        tiles="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-        attr="© OpenStreetMap contributors",
-        name="OSM Street Labels",
-        opacity=0.45,
+        tiles=cfg["tiles"], attr=cfg["attr"],
+        name=cfg["name"], max_zoom=cfg["max_zoom"],
     ).add_to(m)
 
-folium.LayerControl(position="topright").add_to(m)
+# Use case 2: Base map only — street or topo, no aerial at all
+elif view_mode == "Base map only":
+    bcfg = BASEMAP_LAYERS[basemap_choice]
+    folium.TileLayer(
+        tiles=bcfg["tiles"], attr=bcfg["attr"], name=bcfg["name"], max_zoom=19,
+    ).add_to(m)
+
+# Use case 3: Aerial + street overlay — aerial at full opacity, street map on top reduced
+elif view_mode == "Aerial + street overlay":
+    # Aerial goes on first (bottom)
+    cfg = IMAGERY_LAYERS[imagery_choice]
+    folium.TileLayer(
+        tiles=cfg["tiles"], attr=cfg["attr"],
+        name=cfg["name"], max_zoom=cfg["max_zoom"], opacity=1.0,
+    ).add_to(m)
+    # Street/topo goes on top at reduced opacity
+    bcfg = BASEMAP_LAYERS[basemap_choice]
+    folium.TileLayer(
+        tiles=bcfg["tiles"], attr=bcfg["attr"],
+        name=f"{bcfg['name']} (overlay)",
+        max_zoom=19, opacity=overlay_opacity,
+    ).add_to(m)
 
 # ── Layout: map + metadata panel ──────────────────────────────────────────────
 map_col, meta_col = st.columns([3, 1])
@@ -283,33 +321,37 @@ with map_col:
 with meta_col:
     st.subheader("📅 Imagery info")
 
-    meta = STATIC_METADATA.get(imagery_choice)
+    if view_mode == "Base map only":
+        st.info("No aerial imagery active — switch to an aerial mode to see capture metadata.")
 
-    if meta["live_query"]:
-        with st.spinner("Querying ESRI metadata…"):
-            live = query_esri_metadata(lat, lon)
+    else:
+        meta = STATIC_METADATA.get(imagery_choice)
 
-        if live:
-            st.success("Live metadata")
-            st.metric("Capture date", live["capture_date"])
-            st.metric("Resolution",   live["resolution"])
-            st.markdown(f"**Provider:** {live['provider']}")
-            if live.get("accuracy") and live["accuracy"] != 99999:
-                st.markdown(f"**Positional accuracy:** {live['accuracy']:.1f} m")
+        if meta["live_query"]:
+            with st.spinner("Querying ESRI metadata…"):
+                live = query_esri_metadata(lat, lon)
+
+            if live:
+                st.success("Live metadata")
+                st.metric("Capture date", live["capture_date"])
+                st.metric("Resolution",   live["resolution"])
+                st.markdown(f"**Provider:** {live['provider']}")
+                if live.get("accuracy") and live["accuracy"] != 99999:
+                    st.markdown(f"**Positional accuracy:** {live['accuracy']:.1f} m")
+            else:
+                st.warning("Live query unavailable — showing static info")
+                st.markdown(f"**Source:** {meta['source']}")
+                st.markdown(f"**Resolution:** {meta['resolution']}")
+                st.markdown(f"**Update cycle:** {meta['update_cycle']}")
+
+            st.caption(meta["note"])
+
         else:
-            st.warning("Live query unavailable — showing static info")
+            st.info("Date not queryable for this source")
             st.markdown(f"**Source:** {meta['source']}")
             st.markdown(f"**Resolution:** {meta['resolution']}")
             st.markdown(f"**Update cycle:** {meta['update_cycle']}")
-
-        st.caption(meta["note"])
-
-    else:
-        st.info("Date not queryable for this source")
-        st.markdown(f"**Source:** {meta['source']}")
-        st.markdown(f"**Resolution:** {meta['resolution']}")
-        st.markdown(f"**Update cycle:** {meta['update_cycle']}")
-        st.caption(meta["note"])
+            st.caption(meta["note"])
 
     st.divider()
 
