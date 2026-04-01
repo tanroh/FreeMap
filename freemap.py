@@ -29,6 +29,10 @@ st.caption("Free public imagery — no API key required")
 # We do that by incrementing a counter whenever a layer-affecting control changes.
 if "map_key" not in st.session_state:
     st.session_state.map_key = 0
+if "map_center" not in st.session_state:
+    st.session_state.map_center = [-33.8688, 151.2093]  # Default: Sydney
+if "map_zoom" not in st.session_state:
+    st.session_state.map_zoom = 15
 
 def bump_map_key():
     """Called via on_change on any layer-affecting widget."""
@@ -228,8 +232,8 @@ with st.sidebar:
 
 # ── Build map ─────────────────────────────────────────────────────────────────
 m = folium.Map(
-    location=[lat, lon],
-    zoom_start=zoom,
+    location=st.session_state.map_center,
+    zoom_start=st.session_state.map_zoom,
     tiles=None,
     control_scale=True,
 )
@@ -304,6 +308,25 @@ map_col, meta_col = st.columns([3, 1])
 
 with map_col:
     map_data = st_folium(m, use_container_width=True, height=650, key=f"map_{st.session_state.map_key}")
+
+    # Save position so it survives a layer-change remount
+    if map_data:
+        if map_data.get("center"):
+            c = map_data["center"]
+            st.session_state.map_center = [c["lat"], c["lng"]]
+        if map_data.get("zoom"):
+            st.session_state.map_zoom = map_data["zoom"]
+
+# Sync sidebar preset/inputs into session state and re-centre if changed.
+# Round to 4dp to avoid float drift from st_folium's returned centre causing
+# a spurious rerun loop.
+def _r(pos): return [round(pos[0], 4), round(pos[1], 4)]
+sidebar_pos = [lat, lon]
+if _r(sidebar_pos) != _r(st.session_state.map_center) or zoom != st.session_state.map_zoom:
+    st.session_state.map_center = sidebar_pos
+    st.session_state.map_zoom   = zoom
+    st.session_state.map_key   += 1
+    st.rerun()
 
 with meta_col:
     st.subheader("📅 Imagery info")
