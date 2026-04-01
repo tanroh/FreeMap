@@ -24,6 +24,18 @@ st.set_page_config(
 st.title("🛰️ Australian Aerial Imagery Viewer")
 st.caption("Free public imagery — no API key required")
 
+# ── Session state: track layer selections to detect changes ───────────────────
+# st_folium preserves the rendered map between reruns unless we force a new key.
+# We do that by incrementing a counter whenever a layer-affecting control changes.
+if "map_key" not in st.session_state:
+    st.session_state.map_key = 0
+if "prev_imagery" not in st.session_state:
+    st.session_state.prev_imagery = None
+if "prev_basemap" not in st.session_state:
+    st.session_state.prev_basemap = None
+if "prev_overlay" not in st.session_state:
+    st.session_state.prev_overlay = None
+
 # ── Static date info (fallback for non-ESRI sources) ─────────────────────────
 STATIC_METADATA = {
     "NSW SIX Maps (High-res NSW)": {
@@ -182,6 +194,21 @@ with st.sidebar:
         """
     )
 
+# ── Bump map key if any layer-affecting setting changed ───────────────────────
+# This forces st_folium to mount a brand-new map rather than patch the old one,
+# which is what causes inconsistent layer switching behaviour.
+layer_sig = (imagery_choice, basemap_choice, show_osm_overlay)
+prev_sig = (
+    st.session_state.prev_imagery,
+    st.session_state.prev_basemap,
+    st.session_state.prev_overlay,
+)
+if layer_sig != prev_sig:
+    st.session_state.map_key += 1
+    st.session_state.prev_imagery = imagery_choice
+    st.session_state.prev_basemap = basemap_choice
+    st.session_state.prev_overlay = show_osm_overlay
+
 # ── Build map ─────────────────────────────────────────────────────────────────
 m = folium.Map(
     location=[lat, lon],
@@ -251,7 +278,7 @@ folium.LayerControl(position="topright").add_to(m)
 map_col, meta_col = st.columns([3, 1])
 
 with map_col:
-    map_data = st_folium(m, use_container_width=True, height=650)
+    map_data = st_folium(m, use_container_width=True, height=650, key=f"map_{st.session_state.map_key}")
 
 with meta_col:
     st.subheader("📅 Imagery info")
