@@ -2,17 +2,19 @@
 Australian Aerial Imagery Viewer — Streamlit App
 -------------------------------------------------
 Install dependencies:
-    pip install streamlit folium streamlit-folium
+    pip install streamlit folium streamlit-folium requests
 
 Run:
     streamlit run aerial_imagery_app.py
 """
 
+import requests
 import folium
 import streamlit as st
 from streamlit_folium import st_folium
+from datetime import datetime
 
-# ── Page config ──────────────────────────────────────────────────────────────
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="AU Aerial Imagery Viewer",
     page_icon="🛰️",
@@ -22,18 +24,108 @@ st.set_page_config(
 st.title("🛰️ Australian Aerial Imagery Viewer")
 st.caption("Free public imagery — no API key required")
 
-# ── Sidebar controls ─────────────────────────────────────────────────────────
+# ── Static date info (fallback for non-ESRI sources) ─────────────────────────
+STATIC_METADATA = {
+    "NSW SIX Maps (High-res NSW)": {
+        "note": "Imagery varies by area. High-res urban areas typically captured within the last 1–3 years. Rural areas may be older.",
+        "source": "NSW Spatial Services",
+        "resolution": "~12.5 cm (urban) to 50 cm (rural)",
+        "update_cycle": "Rolling — urban areas updated most frequently",
+        "live_query": False,
+    },
+    "DEA Landsat (Rural/Regional)": {
+        "note": "Annual geomedian composite — represents a statistical summary of a full calendar year, not a single capture date.",
+        "source": "Geoscience Australia / USGS Landsat",
+        "resolution": "~25 m",
+        "update_cycle": "Annual",
+        "live_query": False,
+    },
+    "ESRI World Imagery (National)": {
+        "note": "Live metadata queried from ESRI's citation service for the current map centre.",
+        "source": "Esri, Maxar, Earthstar Geographics",
+        "resolution": "Varies by location",
+        "update_cycle": "Irregular — updated as new imagery becomes available",
+        "live_query": True,
+    },
+}
+
+
+# ── ESRI live metadata query ──────────────────────────────────────────────────
+def query_esri_metadata(lat: float, lon: float) -> dict | None:
+    """
+    Query ESRI's World Imagery citation layer (MapServer/4) for capture
+    date, source, and resolution at a given lat/lon.
+    Returns a dict of metadata or None on failure.
+    """
+    url = "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/4/query"
+    params = {
+        "geometry": f"{lon},{lat}",
+        "geometryType": "esriGeometryPoint",
+        "inSR": "4326",
+        "spatialRel": "esriSpatialRelIntersects",
+        "outFields": "SRC_DATE2,NICE_DESC,NICE_NAME,SRC_RES,ACCURACY",
+        "returnGeometry": "false",
+        "f": "json",
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=6)
+        resp.raise_for_status()
+        data = resp.json()
+
+        features = data.get("features", [])
+        if not features:
+            return None
+
+        attrs = features[0]["attributes"]
+
+        # SRC_DATE2 is stored as milliseconds since epoch
+        raw_date = attrs.get("SRC_DATE2")
+        if raw_date and raw_date != 99999:
+            capture_date = datetime.utcfromtimestamp(raw_date / 1000).strftime("%B %Y")
+        else:
+            capture_date = "Not available"
+
+        resolution = attrs.get("SRC_RES")
+        res_str = f"{resolution:.2f} m" if resolution and resolution != 99999 else "Not available"
+
+        return {
+            "capture_date": capture_date,
+            "provider":     attrs.get("NICE_NAME") or attrs.get("NICE_DESC") or "Unknown",
+            "resolution":   res_str,
+            "accuracy":     attrs.get("ACCURACY"),
+        }
+
+    except Exception:
+        return None
+
+
+# ── Sidebar controls ──────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    layer_choice = st.radio(
-        "Imagery source",
+    st.subheader("🛰 Imagery layer")
+    imagery_choice = st.radio(
+        "Source",
         options=[
             "ESRI World Imagery (National)",
             "NSW SIX Maps (High-res NSW)",
             "DEA Landsat (Rural/Regional)",
         ],
         index=0,
+        label_visibility="collapsed",
+    )
+
+    st.subheader("🗺 Base map")
+    basemap_choice = st.radio(
+        "Base map",
+        options=[
+            "None (imagery only)",
+            "OpenStreetMap",
+            "ESRI Topo",
+        ],
+        index=0,
+        label_visibility="collapsed",
     )
 
     show_osm_overlay = st.toggle("Street label overlay (OSM)", value=False)
@@ -94,32 +186,49 @@ with st.sidebar:
 m = folium.Map(
     location=[lat, lon],
     zoom_start=zoom,
-    tiles=None,           # No default tiles — we add our own
+    tiles=None,
     control_scale=True,
 )
 
-LAYERS = {
+# Base map layer (rendered beneath imagery)
+if basemap_choice == "OpenStreetMap":
+    folium.TileLayer(
+        tiles="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attr="© OpenStreetMap contributors",
+        name="OpenStreetMap",
+        max_zoom=19,
+    ).add_to(m)
+elif basemap_choice == "ESRI Topo":
+    folium.TileLayer(
+        tiles="https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+        attr="© Esri, HERE, Garmin, FAO, USGS, EPA, NPS",
+        name="ESRI Topo",
+        max_zoom=19,
+    ).add_to(m)
+
+# Imagery layer
+IMAGERY_LAYERS = {
     "ESRI World Imagery (National)": {
-        "tiles": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        "attr":  "© Esri, Maxar, Earthstar Geographics",
-        "name":  "ESRI World Imagery",
+        "tiles":    "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "attr":     "© Esri, Maxar, Earthstar Geographics",
+        "name":     "ESRI World Imagery",
         "max_zoom": 19,
     },
     "NSW SIX Maps (High-res NSW)": {
-        "tiles": "https://maps.six.nsw.gov.au/arcgis/rest/services/public/NSW_Imagery/MapServer/tile/{z}/{y}/{x}",
-        "attr":  "© NSW Spatial Services (SIX Maps)",
-        "name":  "NSW SIX Maps",
+        "tiles":    "https://maps.six.nsw.gov.au/arcgis/rest/services/public/NSW_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "attr":     "© NSW Spatial Services (SIX Maps)",
+        "name":     "NSW SIX Maps",
         "max_zoom": 19,
     },
     "DEA Landsat (Rural/Regional)": {
-        "tiles": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        "attr":  "© Digital Earth Australia / Geoscience Australia",
-        "name":  "DEA / ESRI Imagery",
+        "tiles":    "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "attr":     "© Digital Earth Australia / Geoscience Australia",
+        "name":     "DEA / ESRI Imagery",
         "max_zoom": 13,
     },
 }
 
-cfg = LAYERS[layer_choice]
+cfg = IMAGERY_LAYERS[imagery_choice]
 folium.TileLayer(
     tiles=cfg["tiles"],
     attr=cfg["attr"],
@@ -127,20 +236,59 @@ folium.TileLayer(
     max_zoom=cfg["max_zoom"],
 ).add_to(m)
 
+# Optional OSM label overlay
 if show_osm_overlay:
     folium.TileLayer(
         tiles="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
         attr="© OpenStreetMap contributors",
         name="OSM Street Labels",
-        opacity=0.5,
+        opacity=0.45,
     ).add_to(m)
 
-folium.LayerControl().add_to(m)
+folium.LayerControl(position="topright").add_to(m)
 
-# ── Render ────────────────────────────────────────────────────────────────────
-map_data = st_folium(m, use_container_width=True, height=650)
+# ── Layout: map + metadata panel ──────────────────────────────────────────────
+map_col, meta_col = st.columns([3, 1])
 
-# ── Show clicked coordinates ──────────────────────────────────────────────────
-if map_data and map_data.get("last_clicked"):
-    clicked = map_data["last_clicked"]
-    st.info(f"📌 Clicked: **{clicked['lat']:.6f}, {clicked['lng']:.6f}**  — paste into the coordinate fields to centre here")
+with map_col:
+    map_data = st_folium(m, use_container_width=True, height=650)
+
+with meta_col:
+    st.subheader("📅 Imagery info")
+
+    meta = STATIC_METADATA.get(imagery_choice)
+
+    if meta["live_query"]:
+        with st.spinner("Querying ESRI metadata…"):
+            live = query_esri_metadata(lat, lon)
+
+        if live:
+            st.success("Live metadata")
+            st.metric("Capture date", live["capture_date"])
+            st.metric("Resolution",   live["resolution"])
+            st.markdown(f"**Provider:** {live['provider']}")
+            if live.get("accuracy") and live["accuracy"] != 99999:
+                st.markdown(f"**Positional accuracy:** {live['accuracy']:.1f} m")
+        else:
+            st.warning("Live query unavailable — showing static info")
+            st.markdown(f"**Source:** {meta['source']}")
+            st.markdown(f"**Resolution:** {meta['resolution']}")
+            st.markdown(f"**Update cycle:** {meta['update_cycle']}")
+
+        st.caption(meta["note"])
+
+    else:
+        st.info("Date not queryable for this source")
+        st.markdown(f"**Source:** {meta['source']}")
+        st.markdown(f"**Resolution:** {meta['resolution']}")
+        st.markdown(f"**Update cycle:** {meta['update_cycle']}")
+        st.caption(meta["note"])
+
+    st.divider()
+
+    # Clicked coordinates
+    if map_data and map_data.get("last_clicked"):
+        clicked = map_data["last_clicked"]
+        st.markdown("**📌 Last clicked**")
+        st.code(f"{clicked['lat']:.6f}, {clicked['lng']:.6f}")
+        st.caption("Paste into the sidebar coordinate fields to centre here")
